@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: mongosh --eval 'db.runCommand("ping").ok'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: redis-cli ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  user-api:
+    build:
+      context: ../../
+      dockerfile: packages/user-api/Dockerfile
+    ports:
+      - "5000:5000"
+    env_file: ../../.env
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  admin-api:
+    build:
+      context: ../../
+      dockerfile: packages/admin-api/Dockerfile
+    ports:
+      - "5001:5001"
+    env_file: ../../.env
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  ai-engine:
+    build:
+      context: ../../
+      dockerfile: packages/ai-engine/Dockerfile
+    ports:
+      - "5002:5002"
+    env_file: ../../.env
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  scraper:
+    build:
+      context: ../../
+      dockerfile: packages/scraper/Dockerfile
+    ports:
+      - "5003:5003"
+    env_file: ../../.env
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  notification-service:
+    build:
+      context: ../../
+      dockerfile: packages/notification-service/Dockerfile
+    ports:
+      - "5004:5004"
+    env_file: ../../.env
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+volumes:
+  mongo_data:

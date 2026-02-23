@@ -1,0 +1,16 @@
+module.exports = {
+  ARTICLE_CREATED: 'article:created',
+  ARTICLE_PUBLISHED: 'article:published',
+  ARTICLE_VIEWED: 'article:viewed',
+  ARTICLE_SHARED: 'article:shared',
+  USER_REGISTERED: 'user:registered',
+  USER_ANONYMOUS_CREATED: 'user:anonymous:created',
+  USER_ANONYMOUS_MERGED: 'user:anonymous:merged',
+  FEED_REQUESTED: 'feed:requested',
+  NOTIFICATION_SEND: 'notification:send',
+  NOTIFICATION_BROADCAST: 'notification:broadcast',
+  SCRAPE_COMPLETED: 'scrape:completed',
+  AI_SUMMARIZE: 'ai:summarize',
+  AI_PROFILE_COMPUTE: 'ai:profile:compute',
+  TRENDING_RECOMPUTE: 'trending:recompute',
+};

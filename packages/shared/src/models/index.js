@@ -1,0 +1,15 @@
+module.exports = {
+  User: require('./user.model'),
+  AnonymousUser: require('./anonymous-user.model'),
+  Article: require('./article.model'),
+  Source: require('./source.model'),
+  UserActivity: require('./user-activity.model'),
+  Bookmark: require('./bookmark.model'),
+  Topic: require('./topic.model'),
+  Timeline: require('./timeline.model'),
+  Notification: require('./notification.model'),
+  AdCampaign: require('./ad-campaign.model'),
+  Comment: require('./comment.model'),
+  DailyDigest: require('./daily-digest.model'),
+  FeedCache: require('./feed-cache.model'),
+};

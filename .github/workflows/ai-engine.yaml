@@ -1,0 +1,26 @@
+name: ai-engine CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/shared/**'
+      - 'packages/ai-engine/**'
+  pull_request:
+    paths:
+      - 'packages/shared/**'
+      - 'packages/ai-engine/**'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm -w packages/ai-engine run test --if-present
+      - run: npm -w packages/ai-engine run lint --if-present
+      # Docker build and K8s deploy steps here

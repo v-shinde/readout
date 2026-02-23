@@ -1,0 +1,40 @@
+{
+  "name": "readout",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Readout - High-frequency news aggregation platform with AI personalization",
+  "workspaces": [
+    "packages/shared",
+    "packages/user-api",
+    "packages/admin-api",
+    "packages/ai-engine",
+    "packages/scraper",
+    "packages/notification-service"
+  ],
+  "scripts": {
+    "dev:user": "npm -w packages/user-api run dev",
+    "dev:admin": "npm -w packages/admin-api run dev",
+    "dev:ai": "npm -w packages/ai-engine run dev",
+    "dev:scraper": "npm -w packages/scraper run dev",
+    "dev:notif": "npm -w packages/notification-service run dev",
+    "dev:all": "concurrently \"npm:dev:user\" \"npm:dev:admin\" \"npm:dev:ai\" \"npm:dev:scraper\" \"npm:dev:notif\"",
+    "start:user": "npm -w packages/user-api run start",
+    "start:admin": "npm -w packages/admin-api run start",
+    "start:ai": "npm -w packages/ai-engine run start",
+    "start:scraper": "npm -w packages/scraper run start",
+    "start:notif": "npm -w packages/notification-service run start",
+    "build:all": "npm --workspaces run build --if-present",
+    "test:all": "npm --workspaces run test --if-present",
+    "lint:all": "npm --workspaces run lint --if-present",
+    "docker:dev": "docker compose -f infra/docker/docker-compose.dev.yaml up --build",
+    "docker:down": "docker compose -f infra/docker/docker-compose.dev.yaml down -v",
+    "seed": "npm -w packages/scraper run seed",
+    "clean": "rm -rf node_modules packages/*/node_modules"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
