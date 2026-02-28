@@ -36,5 +36,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@mongodb-js/zstd": "^2.0.1"
   }
 }

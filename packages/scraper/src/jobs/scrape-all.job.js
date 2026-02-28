@@ -70,9 +70,11 @@ async function _processSource(source) {
   const activeFeeds = source.feeds.filter(f => f.isActive);
   logger.info(`[scrape-all] ${source.name}: ${activeFeeds.length} feeds`);
 
+  // Collect ALL articles from ALL feeds first
+  const allRaw = [];
+
   for (const feed of activeFeeds) {
     try {
-      // 1. Fetch RSS
       const raw = await rssScraper.fetchFeed(feed.url, {
         category: feed.category,
         language: feed.language || 'en',
@@ -85,46 +87,67 @@ async function _processSource(source) {
         },
       });
       fetched += raw.length;
+      allRaw.push(...raw);
 
       if (!raw.length) {
         await publisher.recordSourceError(source._id, feed.url, 'Empty feed');
         errors++;
-        continue;
       }
-
-      // 2. Deduplicate
-      const fresh = await deduplicator.filterDuplicates(raw);
-      newArticles += fresh.length;
-
-      if (!fresh.length) {
-        await publisher.updateSourceStats(source._id, feed.url, 0);
-        continue;
-      }
-
-      // 3. Process images (optional skip for speed)
-      let processed = fresh;
-      if (!SKIP_IMAGES) {
-        processed = await imageProcessor.processBatch(fresh, 5);
-      }
-
-      // 4. Auto-publish as 'published' for dev (in prod: 'ai_generated')
-      processed = processed.map(a => ({
-        ...a,
-        status: process.env.NODE_ENV === 'production' ? 'ai_generated' : 'published',
-        publishedAt: a.originalPublishedAt || new Date(),
-      }));
-
-      // 5. Insert to MongoDB
-      const result = await publisher.publishBatch(processed);
-      inserted += result.inserted;
-
-      await publisher.updateSourceStats(source._id, feed.url, result.inserted);
-
     } catch (err) {
       logger.error(`[scrape-all] Feed failed: ${feed.url} — ${err.message}`);
       await publisher.recordSourceError(source._id, feed.url, err.message);
       errors++;
     }
+  }
+
+  if (!allRaw.length) return { fetched, newArticles, inserted, errors };
+
+  try {
+    // Deduplicate ALL articles from this source at once (within-batch + DB)
+    const fresh = await deduplicator.filterDuplicates(allRaw);
+    newArticles = fresh.length;
+
+    if (!fresh.length) return { fetched, newArticles, inserted, errors };
+
+    // Process images (optional skip for speed)
+    let processed = fresh;
+    if (!SKIP_IMAGES) {
+      processed = await imageProcessor.processBatch(fresh, 5);
+    }
+
+    // Auto-publish as 'published' for dev + generate unique slugs
+    processed = processed.map((a, idx) => {
+      // Generate slug from title
+      let slug = (a.title || 'article')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .slice(0, 60)
+        .replace(/^-+|-+$/g, '');
+
+      // Append full sourceUrlHash to guarantee uniqueness (sha256 = always unique per URL)
+      slug = slug + '-' + a.sourceUrlHash;
+
+      return {
+        ...a,
+        slug,
+        // Fallback for empty summary (some feeds like Indian Express don't include it)
+        summary: a.summary || a.title || 'No summary available',
+        status: process.env.NODE_ENV === 'production' ? 'ai_generated' : 'published',
+        publishedAt: a.originalPublishedAt || new Date(),
+      };
+    });
+
+    // Insert ALL at once
+    const result = await publisher.publishBatch(processed);
+    inserted = result.inserted;
+
+    // Update source stats for first feed (simplified)
+    await publisher.updateSourceStats(source._id, activeFeeds[0].url, result.inserted);
+  } catch (err) {
+    logger.error(`[scrape-all] Source ${source.name} publish failed: ${err.message}`);
+    errors++;
   }
 
   return { fetched, newArticles, inserted, errors };

@@ -1,44 +1,86 @@
 const { Article, Source } = require('@readout/shared').models;
 const logger = require('@readout/shared').utils.logger;
 
+const CHUNK_SIZE = 200; // MongoDB handles this reliably
+
 /**
  * Publish articles to MongoDB.
- * Uses insertMany with ordered:false to continue on individual failures.
+ * Chunks large batches to avoid silent drops with insertMany.
+ * Verifies actual insert count via DB after each chunk.
  *
  * @param {Array} articles - Processed article objects
- * @returns {Object} { inserted, failed, errors }
+ * @returns {Object} { inserted, failed, errors, dupes }
  */
 exports.publishBatch = async (articles) => {
-  if (!articles.length) return { inserted: 0, failed: 0, errors: [] };
+  if (!articles.length) return { inserted: 0, failed: 0, errors: [], dupes: 0 };
 
-  const errors = [];
-  let inserted = 0;
+  // Pre-validate: filter out articles missing required fields
+  const valid = [];
+  const validationErrors = [];
 
-  try {
-    const result = await Article.insertMany(articles, {
-      ordered: false,        // Continue on individual errors
-      rawResult: true,
-    });
-    inserted = result.insertedCount || articles.length;
-  } catch (err) {
-    // insertMany with ordered:false throws on partial failure
-    if (err.insertedDocs) {
-      inserted = err.insertedDocs.length;
+  for (const article of articles) {
+    if (!article.title || !article.sourceUrl || !article.sourceUrlHash) {
+      validationErrors.push('Missing title/sourceUrl/sourceUrlHash');
+      continue;
     }
-    if (err.writeErrors) {
-      err.writeErrors.forEach(we => {
-        // Skip duplicate key errors (already exists)
-        if (we.code !== 11000) {
-          errors.push({ index: we.index, message: we.errmsg });
-        }
-      });
+    if (!article.source) {
+      validationErrors.push('Missing source for: ' + (article.title || '').slice(0, 40));
+      continue;
+    }
+    valid.push(article);
+  }
+
+  if (validationErrors.length && validationErrors.length <= 3) {
+    validationErrors.forEach(function (e) { logger.warn('[publisher] Skipped: ' + e); });
+  } else if (validationErrors.length) {
+    logger.warn('[publisher] Skipped ' + validationErrors.length + ' invalid articles');
+  }
+
+  if (!valid.length) return { inserted: 0, failed: articles.length, errors: validationErrors, dupes: 0 };
+
+  // Count before insert to verify actual inserts
+  const countBefore = await Article.countDocuments();
+
+  const allErrors = [];
+  let totalDupes = 0;
+
+  // Process in chunks to avoid MongoDB silent drops on large batches
+  for (let i = 0; i < valid.length; i += CHUNK_SIZE) {
+    const chunk = valid.slice(i, i + CHUNK_SIZE);
+
+    try {
+      await Article.insertMany(chunk, { ordered: false });
+    } catch (err) {
+      if (err.writeErrors) {
+        err.writeErrors.forEach(function (we) {
+          if (we.code === 11000) {
+            totalDupes++;
+          } else {
+            allErrors.push({ index: we.index + i, message: we.errmsg });
+          }
+        });
+      }
+      if (!err.writeErrors) {
+        logger.error('[publisher] Chunk error: ' + (err.message || '').slice(0, 200));
+        allErrors.push({ message: (err.message || '').slice(0, 200) });
+      }
     }
   }
 
-  const failed = articles.length - inserted;
-  logger.info(`[publisher] Inserted ${inserted}, failed ${failed}${errors.length ? `, errors: ${errors.length}` : ''}`);
+  // Count after to get REAL inserted count
+  const countAfter = await Article.countDocuments();
+  const actualInserted = countAfter - countBefore;
 
-  return { inserted, failed, errors };
+  if (allErrors.length && allErrors.length <= 3) {
+    allErrors.forEach(function (e) {
+      logger.error('[publisher] Write error: ' + (e.message || '').slice(0, 200));
+    });
+  }
+
+  const failed = valid.length - actualInserted - totalDupes;
+  logger.info('[publisher] Inserted ' + actualInserted + ', dupes ' + totalDupes + ', errors ' + (failed > 0 ? failed : 0) + ', skipped ' + validationErrors.length);
+
+  return { inserted: actualInserted, failed: failed, errors: allErrors, dupes: totalDupes };
 };
 
 /**

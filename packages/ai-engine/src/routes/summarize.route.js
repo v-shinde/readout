@@ -1,6 +1,6 @@
 // ==================== summarize.route.js ====================
 const router = require('express').Router();
-const c = require('../../services/ai-summarization.service');
+const c = require('../services/ai-summarization.service');
 const { asyncHandler } = require('@readout/shared').utils;
 
 // POST /ai/v1/summarize/article — called by scraper
