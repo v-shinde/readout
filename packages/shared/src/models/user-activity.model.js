@@ -104,7 +104,13 @@ UserActivitySchema.index({ timestamp: 1 }, { expireAfterSeconds: 180 * 24 * 3600
 // Fire-and-forget activity logging
 UserActivitySchema.statics.logActivity = async function (data) {
   try {
-    return await this.collection.insertOne({ ...data, timestamp: new Date() });
+    const doc = {
+      ...data,
+      userId: new mongoose.Types.ObjectId(data.userId),
+      articleId: data.articleId ? new mongoose.Types.ObjectId(data.articleId) : undefined,
+      timestamp: new Date(),
+    };
+    return await this.collection.insertOne(doc);
   } catch (err) {
     console.error('Activity log error:', err.message);
   }
@@ -113,7 +119,12 @@ UserActivitySchema.statics.logActivity = async function (data) {
 // Batch insert
 UserActivitySchema.statics.logBatch = async function (activities) {
   try {
-    const docs = activities.map(a => ({ ...a, timestamp: a.timestamp || new Date() }));
+    const docs = activities.map(a => ({
+      ...a,
+      userId: new mongoose.Types.ObjectId(a.userId),
+      articleId: a.articleId ? new mongoose.Types.ObjectId(a.articleId) : undefined,
+      timestamp: a.timestamp || new Date(),
+    }));
     return await this.collection.insertMany(docs, { ordered: false });
   } catch (err) {
     console.error('Batch activity error:', err.message);
