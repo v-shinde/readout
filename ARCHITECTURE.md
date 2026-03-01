@@ -17,9 +17,10 @@
 9. [Authentication & User Lifecycle](#authentication--user-lifecycle)
 10. [Notification System](#notification-system)
 11. [Ad Injection](#ad-injection)
-12. [Infrastructure & Deployment](#infrastructure--deployment)
-13. [API Surface](#api-surface)
-14. [Incomplete / TODO Components](#incomplete--todo-components)
+12. [Android App (readout-android)](#android-app-readout-android)
+13. [Infrastructure & Deployment](#infrastructure--deployment)
+14. [API Surface](#api-surface)
+15. [Incomplete / TODO Components](#incomplete--todo-components)
 
 ---
 
@@ -27,7 +28,8 @@
 
 ```
                                  +------------------+
-                                 |   Mobile Client  |
+                                 | readout-android  |
+                                 |  (Kotlin/MVVM)   |
                                  +--------+---------+
                                           |
                                           v
@@ -68,7 +70,9 @@
               +--------------+
 ```
 
-**Tech Stack:** Node.js 18, Express, MongoDB 7, Redis 7, OpenAI (GPT-4o-mini), BullMQ, Turborepo, Docker, Kubernetes
+**Tech Stack:**
+- **Backend:** Node.js 18, Express, MongoDB 7, Redis 7, OpenAI (GPT-4o-mini), BullMQ, Turborepo, Docker, Kubernetes
+- **Android:** Kotlin 1.9.24, Retrofit, Jetpack Navigation, Material Design 3, MVVM
 
 ---
 
@@ -719,6 +723,221 @@ Admin creates notification
 
 ---
 
+## Android App (readout-android)
+
+The native Android client lives in `../readout-android/ReadOut/` — a single-module Kotlin app consuming the user-api backend.
+
+### Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Language | Kotlin 1.9.24 |
+| Min SDK | API 26 (Android 8) |
+| Target SDK | API 34 (Android 14) |
+| Architecture | MVVM (ViewModel + LiveData) |
+| Navigation | Jetpack Navigation Component |
+| Networking | Retrofit 2.9 + OkHttp 4.12 + Gson |
+| Images | Glide 4.16 |
+| Async | Kotlin Coroutines 1.8.1 |
+| UI | Material Design 3, ViewPager2, ConstraintLayout |
+| DI | Manual (no Hilt/Koin) |
+
+### Project Structure
+
+```
+ReadOut/app/src/main/java/com/readout/app/
+├── ReadOutApp.kt                  # Application class, manual DI
+├── MainActivity.kt                # NavHost + bottom nav
+├── data/
+│   ├── local/
+│   │   └── PrefsManager.kt        # SharedPreferences wrapper
+│   ├── model/
+│   │   ├── Article.kt             # UI article data class
+│   │   └── Category.kt            # UI category data class
+│   ├── remote/
+│   │   ├── ApiService.kt          # Retrofit interface (all endpoints)
+│   │   ├── RetrofitClient.kt      # Singleton OkHttp + Retrofit setup
+│   │   └── dto/
+│   │       ├── AuthDtos.kt        # Auth request/response DTOs
+│   │       ├── FeedDtos.kt        # Feed/article DTOs with helpers
+│   │       └── ActivityDtos.kt    # Activity tracking DTOs
+│   ├── repository/
+│   │   ├── AuthRepository.kt      # Auth flows (anonymous, Google)
+│   │   ├── FeedRepository.kt      # Feed fetching + bookmarks
+│   │   └── ActivityRepository.kt  # Event batching + session tracking
+│   └── MockData.kt                # 12 categories, 4 sample articles
+├── ui/
+│   ├── splash/
+│   │   └── SplashFragment.kt      # Auto-navigate if logged in (1.5s)
+│   ├── onboarding/
+│   │   ├── OnboardingFragment.kt  # Category selection (min 3)
+│   │   ├── OnboardingViewModel.kt # Anonymous login + pref sync
+│   │   └── CategoryAdapter.kt     # Grid chips with emoji + color
+│   ├── feed/
+│   │   ├── FeedFragment.kt        # ViewPager2 card swiper
+│   │   ├── FeedViewModel.kt       # Pagination, dedup, activity tracking
+│   │   └── FeedViewModelFactory.kt
+│   ├── explore/
+│   │   └── ExploreFragment.kt     # 3-column category grid
+│   ├── bookmarks/
+│   │   └── BookmarksFragment.kt   # Stub (empty state only)
+│   └── profile/
+│       └── ProfileFragment.kt     # Stub (static UI only)
+└── utils/
+    └── Extensions.kt              # formatCount (K/M), timeAgo
+```
+
+### Navigation Flow
+
+```
+SplashFragment
+    │
+    ├── Logged in + onboarded? ──► FeedFragment (auto, 1.5s delay)
+    │
+    └── Not onboarded ──► OnboardingFragment
+                              │
+                              ├── Select 3+ categories ──► anonymous login
+                              │   save prefs (local-first) ──► FeedFragment
+                              │
+                              └── "Skip for now" ──► anonymous login ──► FeedFragment
+
+Bottom Navigation (visible on main screens):
+    For You (FeedFragment) | Explore | Saved | Profile
+```
+
+### API Integration
+
+**RetrofitClient** configuration:
+- Base URL from `BuildConfig.API_BASE_URL` (emulator: `10.0.2.2:5000`, prod: `api.readout.app`)
+- Auto-injects `Authorization: Bearer {token}` and `X-Device-Type: android` headers
+- 15s connect/read/write timeouts
+- Full body logging in debug, none in release
+
+**Endpoints consumed:**
+
+| Endpoint | Method | Used By |
+|----------|--------|---------|
+| `/auth/anonymous` | POST | OnboardingViewModel (login) |
+| `/auth/google` | POST | AuthRepository (Google login) |
+| `/feed/for-you` | GET | FeedRepository (paginated) |
+| `/feed/trending` | GET | FeedRepository (paginated) |
+| `/feed/category/{cat}` | GET | FeedRepository (paginated) |
+| `/feed/next` | GET | FeedRepository (infinite scroll) |
+| `/articles/{slug}` | GET | FeedRepository (detail) |
+| `/users/preferences` | PUT | AuthRepository (onboarding) |
+| `/activity/track` | POST | ActivityRepository (single) |
+| `/activity/batch` | POST | ActivityRepository (batched) |
+| `/activity/session/start` | POST | ActivityRepository |
+| `/activity/session/end` | POST | ActivityRepository |
+| `/bookmarks` | GET/POST | FeedRepository |
+| `/bookmarks/{id}` | DELETE | FeedRepository |
+
+### Activity Tracking (Client-Side Batching)
+
+```
+User actions (view, like, bookmark, share, scroll_past)
+    │
+    └──► queueEvent() ──► CopyOnWriteArrayList
+            │
+            ├── Queue reaches 10 events? ──► flush() → POST /activity/batch
+            │
+            └── Every 30 seconds ──► flush() → POST /activity/batch
+
+Session lifecycle:
+    App open  → startSession() → POST /activity/session/start
+    App close → endSession()   → flush() + POST /activity/session/end
+                                  (sends durationMinutes + articlesRead)
+```
+
+### Feed UI (Card Swiper)
+
+```
+┌─────────────────────────────────┐
+│  readOut.                    👤  │  ← Header
+├─────────────────────────────────┤
+│  [For You]  [Trending]  [Latest]│  ← TabLayout
+├─────────────────────────────────┤
+│  ┌───────────────────────────┐  │
+│  │  [Image 190dp]            │  │
+│  │  ┌─────┐      ┌────────┐ │  │
+│  │  │ Cat │      │ 60 sec │ │  │
+│  │  └─────┘      └────────┘ │  │
+│  ├───────────────────────────┤  │  ← ViewPager2
+│  │  TH · The Hindu · 12m    │  │     (vertical swipe)
+│  │                           │  │
+│  │  Article Title (2 lines)  │  │
+│  │  Summary text...          │  │
+│  │                           │  │
+│  │  ❤ 1.2K  💬 45  ↗  🔖   │  │  ← Action bar
+│  └───────────────────────────┘  │
+│                                 │
+│  ↑ Swipe up for next · 1/20    │  ← Pagination hint
+├─────────────────────────────────┤
+│  For You | Explore | Saved | Me │  ← Bottom nav
+└─────────────────────────────────┘
+```
+
+**Pagination logic:**
+- Loads page 1 on tab select (full replacement)
+- Auto-triggers next page when 3 items from end
+- Deduplicates by article ID across pages
+- Falls back to MockData on API error
+
+### Data Layer DTOs
+
+**ArticleDto** handles multiple backend response shapes:
+- Image: tries `media.thumbnail.url` → `imageUrl` → `image`
+- Source: tries `sourceInfo.name` → `sourceName` → `"Unknown"`
+- Likes: tries `engagement.reactions.like` → `likes`
+- Comments: tries `engagement.comments` → `comments`
+- Summary: tries `summary` → first 200 chars of `content`
+
+**AuthResponse** handles multiple token locations:
+- Token: tries `data.accessToken` → top-level `token`
+- UserId: tries `data.anonymousId` → `data.userId` → `user.id`
+
+### Local Storage (PrefsManager)
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `token` | String | JWT access token |
+| `user_id` | String | User or anonymous ID |
+| `user_name` | String | Display name (default: "Anonymous Reader") |
+| `is_anonymous` | Boolean | Anonymous user flag |
+| `is_onboarded` | Boolean | Onboarding completed |
+| `device_id` | String | Auto-generated UUID (survives clear) |
+| `session_id` | String | Current session UUID |
+| `categories` | String | Comma-separated category keys |
+
+### Design System
+
+| Token | Value |
+|-------|-------|
+| Primary | Coral `#E8655A` |
+| Background | Light gray `#F5F5F7` |
+| Card radius | 22dp |
+| Card image height | 190dp |
+| Avatar | 72dp |
+| Category colors | 10 distinct colors (tech blue, india red, sports amber, etc.) |
+| Theme | Material3 Light, NoActionBar |
+| Fonts | System default |
+
+### Android TODO / Stubs
+
+| Component | Status |
+|-----------|--------|
+| BookmarksFragment | Stub (empty state UI only) |
+| ProfileFragment | Stub (static UI only) |
+| Google Sign-In | DTO ready, UI button exists, not wired |
+| Article Detail Screen | Not built (slug-based API ready) |
+| Search | Not built |
+| Comments | Not built |
+| Push Notifications (FCM) | Not integrated |
+| Offline/Room caching | Not implemented |
+| Dark theme | Not implemented (theme defined as light only) |
+
+---
+
 ## Infrastructure & Deployment
 
 ### Docker Compose (Local Development)
@@ -813,6 +1032,20 @@ Steps: checkout → Node 18 setup → npm ci → test → lint → (TODO: Docker
 | Docker Build + K8s Deploy | CI/CD workflows | TODO steps |
 | Account Deletion Cleanup | Background job for activity/comment anonymization | Not implemented |
 
+### Android App TODOs
+
+| Component | Status |
+|-----------|--------|
+| BookmarksFragment | Stub (empty state UI only) |
+| ProfileFragment | Stub (static UI only) |
+| Google Sign-In | DTO ready, button exists, not wired to Google SDK |
+| Article Detail Screen | Not built (slug API ready in backend) |
+| Search Screen | Not built |
+| Comments UI | Not built |
+| FCM Push Notifications | Not integrated |
+| Offline / Room DB caching | Not implemented |
+| Dark Theme | Not implemented |
+
 ---
 
-*Generated from full codebase review on 2026-03-01.*
+*Generated from full codebase review (backend + Android) on 2026-03-01.*
