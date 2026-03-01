@@ -30,11 +30,21 @@ class ColdStartEngine {
     const phase = this.getUserPhase(user);
     logger.info(`[cold-start] phase=${phase} id=${trackingId} anon=${isAnonymous}`);
 
+    // Recompute profile if stale (null or older than 30 min) for phases that use scores
+    if (['EARLY_EXPLORING', 'EXPLORING', 'WARMING', 'PERSONALIZED'].includes(phase)) {
+      await this._ensureFreshProfile(trackingId, user);
+    }
+
     switch (phase) {
       case 'BRAND_NEW': return this._brandNewFeed(user, language, limit);
       case 'ONBOARDED': return this._onboardedFeed(user, language, limit);
-      case 'EARLY_EXPLORING': return this._earlyExploringFeed(user, trackingId, language, limit);
-      case 'EXPLORING': return this._exploringFeed(user, trackingId, language, limit);
+      case 'EARLY_EXPLORING':
+        // Re-fetch user to get freshly computed scores
+        const freshEarly = await Model.findById(trackingId).lean();
+        return this._earlyExploringFeed(freshEarly, trackingId, language, limit);
+      case 'EXPLORING':
+        const freshExploring = await Model.findById(trackingId).lean();
+        return this._exploringFeed(freshExploring, trackingId, language, limit);
       case 'WARMING':
         const candidates = await this._getCandidates(language, 200);
         return this.personalizationEngine.rankArticlesForUser(trackingId, candidates, { diversityFactor: 0.15 });
@@ -42,6 +52,21 @@ class ColdStartEngine {
         const pool = await this._getCandidates(language, 200);
         return this.personalizationEngine.rankArticlesForUser(trackingId, pool, { diversityFactor: 0.1 });
       default: return this._globalTrending(language, limit);
+    }
+  }
+
+  async _ensureFreshProfile(trackingId, user) {
+    const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+    const lastComputed = user.personalization?.lastComputedAt;
+    const isStale = !lastComputed || (Date.now() - new Date(lastComputed).getTime() > STALE_THRESHOLD_MS);
+
+    if (isStale) {
+      logger.info(`[cold-start] Profile stale for ${trackingId}, recomputing...`);
+      try {
+        await this.personalizationEngine.computeUserProfile(trackingId);
+      } catch (err) {
+        logger.error(`[cold-start] Profile recompute failed: ${err.message}`);
+      }
     }
   }
 

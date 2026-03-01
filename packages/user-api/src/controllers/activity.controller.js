@@ -34,6 +34,31 @@ exports.trackBatch = asyncHandler(async (req, res) => {
 
   const tracked = await activityService.logBatch(req.trackingId, activities, req.deviceInfo);
 
+  // Process each activity for stats, engagement counters, and deduplication
+  const redis = req.app.locals.redis;
+  const significantActions = new Set(['read_summary', 'read_full', 'share', 'bookmark', 'reaction']);
+  let hasSignificant = false;
+
+  for (const a of activities) {
+    // Update user stats (totalArticlesRead, totalShares, etc.)
+    activityService.updateUserStats(req.trackingId, req.isAnonymous, a.action, a.metadata);
+
+    if (a.articleId) {
+      // Increment Redis engagement counters
+      activityService.incrArticleEngagement(a.articleId, a.action, redis);
+
+      // Mark article as viewed for deduplication
+      activityService.markViewed(req.trackingId, a.articleId, redis);
+    }
+
+    if (significantActions.has(a.action)) hasSignificant = true;
+  }
+
+  // Invalidate feed cache if batch had significant interactions
+  if (hasSignificant) {
+    activityService.invalidateFeedCache(req.trackingId, redis);
+  }
+
   res.json({ success: true, data: { tracked } });
 });
 
